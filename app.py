@@ -5,7 +5,7 @@ import traceback
 from bs4 import BeautifulSoup
 from flask import Flask, request, jsonify
 from openai import OpenAI
-import urllib3  # Importamos esto aquí para usarlo después
+import urllib3
 
 app = Flask(__name__)
 
@@ -29,10 +29,7 @@ def analyze_endpoint():
             return response.json()['tasks'][0]['result']
 
         def analyze_on_page(url):
-            # Ignoramos la advertencia de seguridad de SSL
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-            
-            # Hacemos la petición sin verificar el certificado SSL
             response = requests.get(url, headers={'User-Agent': 'SEO-Tool/1.0'}, timeout=15, verify=False)
             response.raise_for_status()
             soup = BeautifulSoup(response.text, 'html.parser')
@@ -68,7 +65,20 @@ def analyze_endpoint():
             if not OPENAI_API_KEY:
                 return {"error": "La API key de OpenAI no está configurada."}
             client = OpenAI(api_key=OPENAI_API_KEY)
-            prompt = f"""Actúa como un experto en SEO y copywriter de habla hispana. Analiza la siguiente información:\n- Keyword principal: "{keyword}"\n- Contenido de la página (primeros 2000 caracteres): "{contenido_pagina[:2000]}"\n- URLs de los competidores principales: {', '.join(competidores)}\n\nGenera una respuesta en formato JSON con claves en español y el siguiente contenido:\n1. "resumen_ejecutivo": Un párrafo corto (2-3 frases) con el diagnóstico principal y la recomendación más importante.\n2. "sugerencia_titulo": Un título SEO optimizado (50-60 caracteres) que sea atractivo.\n3. "sugerencia_descripcion": Una meta descripción (150-160 caracteres) que incentive el clic.\n4. "brecha_de_contenido": Menciona 2-3 temas o preguntas específicas que los competidores probablemente cubren y que deberían añadirse a la página."""
+            
+            # El texto largo (string) empieza con f"""
+            prompt = f"""Actúa como un experto en SEO y copywriter de habla hispana. Analiza la siguiente información:
+- Keyword principal: "{keyword}"
+- Contenido de la página (primeros 2000 caracteres): "{contenido_pagina[:2000]}"
+- URLs de los competidores principales: {', '.join(competidores)}
+
+Genera una respuesta en formato JSON con claves en español y el siguiente contenido:
+1. "resumen_ejecutivo": Un párrafo corto (2-3 frases) con el diagnóstico principal y la recomendación más importante.
+2. "sugerencia_titulo": Un título SEO optimizado (50-60 caracteres) que sea atractivo.
+3. "sugerencia_descripcion": Una meta descripción (150-160 caracteres) que incentive el clic.
+4. "brecha_de_contenido": Menciona 2-3 temas o preguntas específicas que los competidores probablemente cubren y que deberían añadirse a la página."""
+            # Y el texto largo (string) termina aquí con """
+
             response = client.chat.completions.create(model="gpt-4o-mini", response_format={"type": "json_object"}, messages=[{"role": "system", "content": prompt}])
             return json.loads(response.choices[0].message.content)
 
@@ -91,7 +101,7 @@ def analyze_endpoint():
 
         for keyword in keywords:
             keyword_results = post_to_dataforseo("keywords_data/google/keywords_for_keywords/live", [{"keywords": [keyword], "language_name": "Spanish", "location_code": 2724}])
-            serp_results = post_to_dataforseo("serp/google/organic/live", [{"keyword": keyword, "language_name": "Spanish", "location_code": 2724, "depth": 10}])
+            serp_results = post_to_dataforseo("serp/live/advanced", [{"keyword": keyword, "language_name": "Spanish", "location_code": 2724, "depth": 10}])
 
             if not keyword_results or not serp_results:
                 keyword_analyses.append({"keyword": keyword, "error": "No se pudieron obtener datos para esta keyword."})
@@ -102,11 +112,11 @@ def analyze_endpoint():
             features_en_serp = [item['feature'] for item in serp_results[0].get('serp_extra', []) if item.get('feature')] if serp_results else []
 
             for item in serp_results[0].get('items', []):
-                if item['type'] == 'organic':
+                if item.get('type') == 'organic':
                     current_url = item.get('url', '')
                     if target_url in current_url and position == 0: position = item.get('rank_group', 0)
                     if len(top_5_competitors) < 5 and target_url not in current_url:
-                        top_5_competidores.append(current_url)
+                        top_5_competitors.append(current_url)
                         all_competitors.add(current_url)
 
             search_volume = keyword_data.get('search_volume', 0)
@@ -117,7 +127,7 @@ def analyze_endpoint():
                 "keyword": keyword,
                 "rendimiento_serp": {"posicion": position, "trafico_estimado": round(estimated_traffic), "valor_trafico_usd": round(estimated_traffic * cpc, 2), "features_en_serp": features_en_serp},
                 "metricas_keyword": {"volumen_busqueda": search_volume, "dificultad_keyword": keyword_data.get('keyword_difficulty', 0), "cpc_usd": cpc},
-                "analisis_competencia": {"top_5_competidores": top_5_competidores}
+                "analisis_competencia": {"top_5_competidores": top_5_competitors}
             })
 
         sugerencias_ia = enriquecer_con_ia(on_page_results.get('contenido_texto', ''), keywords[0], list(all_competitors))

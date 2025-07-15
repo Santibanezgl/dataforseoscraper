@@ -6,6 +6,7 @@ import time
 from bs4 import BeautifulSoup
 from flask import Flask, request, jsonify
 import urllib3
+from urllib.parse import urlparse
 
 app = Flask(__name__)
 
@@ -22,52 +23,6 @@ def post_to_dataforseo(endpoint, data):
     )
     response.raise_for_status()
     return response.json()
-
-def wait_for_tasks_completion(task_ids, max_wait_time=90, check_interval=10):
-    """Espera a que las tareas se completen con polling."""
-    start_time = time.time()
-    completed_tasks = {}
-    
-    while time.time() - start_time < max_wait_time:
-        try:
-            pending_task_ids = [task_id for task_id in task_ids if task_id not in completed_tasks]
-            if not pending_task_ids:
-                return completed_tasks
-            
-            task_ids_to_check = [{"id": task_id} for task_id in pending_task_ids]
-            serp_results = post_to_dataforseo("serp/google/organic/task_get/advanced", task_ids_to_check)
-            
-            for task in serp_results['tasks']:
-                task_id = task['id']
-                # ===== CORRECCIÓN DEFINITIVA AQUÍ =====
-                # Buscamos el código 20000 (Ok) que significa que la tarea ha finalizado con éxito.
-                if task.get('status_code') == 20000 and task.get('result'):
-                    keyword = task['data']['keyword']
-                    completed_tasks[task_id] = {'keyword': keyword, 'result': task.get('result')}
-
-            if len(completed_tasks) == len(task_ids):
-                return completed_tasks
-            
-            time.sleep(check_interval)
-            
-        except Exception as e:
-            print(f"Error durante el polling: {e}")
-            time.sleep(check_interval)
-    
-    return completed_tasks
-
-def get_keyword_data_with_retry(keyword, max_retries=3):
-    """Obtiene datos de keyword con reintentos."""
-    for attempt in range(max_retries):
-        try:
-            kw_post_data = [{"keywords": [keyword], "language_name": "Spanish", "location_code": 2724}]
-            keyword_data_response = post_to_dataforseo("keywords_data/google/keywords_for_keywords/live", kw_post_data)
-            return keyword_data_response['tasks'][0]['result'][0]
-        except Exception as e:
-            if attempt < max_retries - 1:
-                time.sleep(2)
-            else:
-                raise e
 
 def analyze_on_page(url):
     """Analiza una URL para obtener métricas on-page."""
@@ -105,66 +60,41 @@ def analyze_endpoint():
         on_page_results = analyze_on_page(target_url)
         if "error" in on_page_results: return jsonify(on_page_results), 500
 
-        tasks_data = [{"keyword": keyword, "language_name": "Spanish", "location_code": 2724, "depth": 20} for keyword in keywords]
-        tasks_post_response = post_to_dataforseo("serp/google/organic/task_post", tasks_data)
-        posted_tasks = tasks_post_response['tasks']
-        
-        task_ids = [task['id'] for task in posted_tasks if task.get('status_code') == 20100]
-        
-        if not task_ids:
-            return jsonify({"error": "No se pudieron crear las tareas SERP."}), 500
-        
-        # Asignamos la keyword a cada ID para usarla después
-        task_id_to_keyword = {task['id']: task['data']['keyword'] for task in posted_tasks if task.get('id') in task_ids}
-        
-        completed_tasks = wait_for_tasks_completion(task_ids)
-        
+        # === NUEVO: OBTENER COMPETIDORES DEL DOMINIO ===
+        try:
+            domain = urlparse(target_url).netloc
+            competitors_post_data = [{"target": domain, "location_code": 2724, "language_code": "es", "limit": 5, "order_by": ["rating,desc"]}]
+            competitors_response = post_to_dataforseo("dataforseo_labs/google/competitors_domain/live", competitors_post_data)
+            competitors_data = competitors_response['tasks'][0]['result'][0].get('items', [])
+            top_5_domain_competitors = [item['domain'] for item in competitors_data]
+        except Exception as e:
+            print(f"Error obteniendo competidores de dominio: {e}")
+            top_5_domain_competitors = []
+
         keyword_analyses = []
         for keyword in keywords:
-            task_result_data = None
-            # Buscamos el resultado de la tarea por su keyword
-            for task_id, task_data in completed_tasks.items():
-                if task_id_to_keyword.get(task_id) == keyword:
-                    task_result_data = task_data['result']
-                    break
+            # Iniciamos la tarea SERP
+            task_post_data = [{"keyword": keyword, "language_name": "Spanish", "location_code": 2724, "depth": 20}]
+            task_post_response = post_to_dataforseo("serp/google/organic/task_post", task_post_data)
             
-            if not task_result_data:
-                try:
-                    keyword_data = get_keyword_data_with_retry(keyword)
-                    keyword_analyses.append({
-                        "keyword": keyword,
-                        "rendimiento_serp": {"posicion": 0, "trafico_estimado": 0, "valor_trafico_usd": 0.0, "nota": "Datos SERP no disponibles"},
-                        "metricas_keyword": {"volumen_busqueda": keyword_data.get('search_volume', 0), "dificultad_keyword": keyword_data.get('keyword_difficulty', 0), "cpc_usd": keyword_data.get('cpc', 0)},
-                        "analisis_competencia": {"top_5_competidores": []}
-                    })
-                except Exception as e:
-                    keyword_analyses.append({"keyword": keyword, "error": f"No se pudieron obtener datos para esta keyword: {e}"})
-                continue
+            # Obtenemos los datos de la keyword (esta llamada es rápida)
+            kw_post_data = [{"keywords": [keyword], "language_name": "Spanish", "location_code": 2724}]
+            kw_response = post_to_dataforseo("keywords_data/google/keywords_for_keywords/live", kw_post_data)
+            keyword_data = kw_response['tasks'][0]['result'][0]
+            
+            # Añadimos un resultado parcial mientras esperamos
+            keyword_analyses.append({
+                "keyword": keyword,
+                "rendimiento_serp": {"posicion": 0, "trafico_estimado": 0, "valor_trafico_usd": 0.0, "nota": "Datos SERP no disponibles o la tarea falló."},
+                "metricas_keyword": {"volumen_busqueda": keyword_data.get('search_volume', 0), "dificultad_keyword": keyword_data.get('keyword_difficulty', 0), "cpc_usd": keyword_data.get('cpc', 0)},
+            })
 
-            try:
-                keyword_data = get_keyword_data_with_retry(keyword)
-                position, top_5_competitors_list = 0, []
-                for item in task_result_data[0].get('items', []):
-                    if item.get('type') == 'organic':
-                        current_url = item.get('url', '')
-                        if target_url in current_url and position == 0: position = item.get('rank_group', 0)
-                        if len(top_5_competitors_list) < 5 and target_url not in current_url:
-                            top_5_competitors_list.append(current_url)
-
-                search_volume = keyword_data.get('search_volume', 0)
-                cpc = keyword_data.get('cpc', 0)
-                estimated_traffic = search_volume * {1: 0.28, 2: 0.16, 3: 0.11, 4: 0.08, 5: 0.06}.get(position, 0.01)
-
-                keyword_analyses.append({
-                    "keyword": keyword,
-                    "rendimiento_serp": {"posicion": position, "trafico_estimado": round(estimated_traffic), "valor_trafico_usd": round(estimated_traffic * cpc, 2)},
-                    "metricas_keyword": {"volumen_busqueda": search_volume, "dificultad_keyword": keyword_data.get('keyword_difficulty', 0), "cpc_usd": cpc},
-                    "analisis_competencia": {"top_5_competidores": top_5_competitors_list}
-                })
-            except Exception as e:
-                keyword_analyses.append({"keyword": keyword, "error": f"Error procesando datos: {e}"})
-
-        final_report = {"url_analizada": target_url, "analisis_on_page": on_page_results, "analisis_keywords": keyword_analyses, "tareas_completadas": f"{len(completed_tasks)}/{len(task_ids)}"}
+        final_report = {
+             "url_analizada": target_url, 
+             "analisis_on_page": on_page_results, 
+             "analisis_keywords": keyword_analyses,
+             "top_5_competidores_de_dominio": top_5_domain_competitors
+        }
         return jsonify(final_report)
 
     except Exception as e:

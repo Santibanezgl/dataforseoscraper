@@ -5,7 +5,6 @@ import traceback
 import time
 from bs4 import BeautifulSoup
 from flask import Flask, request, jsonify
-from openai import OpenAI
 import urllib3
 
 app = Flask(__name__)
@@ -13,7 +12,6 @@ app = Flask(__name__)
 # --- CONFIGURACIÓN DE LAS CLAVES (SE LEEN DEL ENTORNO DE RENDER) ---
 DATAFORSEO_LOGIN = os.environ.get("DATAFORSEO_LOGIN")
 DATAFORSEO_PASSWORD = os.environ.get("DATAFORSEO_PASSWORD")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
 def post_to_dataforseo(endpoint, data):
     """Función centralizada para hacer llamadas POST a la API de DataForSEO."""
@@ -61,33 +59,8 @@ def analyze_on_page(url):
         "metadescripcion_actual": meta_desc_tag.get('content', '').strip() if meta_desc_tag else "N/A",
         "url_canonica": canonical_tag.get('href', 'N/A') if canonical_tag else "N/A",
         "tiene_schema_markup": bool(soup.find('script', type='application/ld+json')),
-        "tiempo_de_respuesta_seg": round(response.elapsed.total_seconds(), 2),
-        "contenido_texto": soup.get_text(separator=' ', strip=True)
+        "tiempo_de_respuesta_seg": round(response.elapsed.total_seconds(), 2)
     }
-
-def enriquecer_con_ia(contenido_pagina, keyword, competidores):
-    """Genera sugerencias cualitativas usando la API de OpenAI."""
-    if not OPENAI_API_KEY: 
-        return {"error": "La API key de OpenAI no está configurada."}
-    
-    client = OpenAI(api_key=OPENAI_API_KEY)
-    prompt = f"""Actúa como un experto en SEO y copywriter de habla hispana. Analiza la siguiente información:
-- Keyword principal: "{keyword}"
-- Contenido de la página (primeros 2000 caracteres): "{contenido_pagina[:2000]}"
-- URLs de los competidores principales: {', '.join(competidores)}
-
-Genera una respuesta en formato JSON con claves en español y el siguiente contenido:
-1. "resumen_ejecutivo": Un párrafo corto.
-2. "sugerencia_titulo": Un título SEO optimizado (50-60 caracteres).
-3. "sugerencia_descripcion": Una meta descripción (150-160 caracteres).
-4. "brecha_de_contenido": Menciona 2-3 temas que los competidores cubren y la página no."""
-    
-    response = client.chat.completions.create(
-        model="gpt-4o-mini", 
-        response_format={"type": "json_object"}, 
-        messages=[{"role": "system", "content": prompt}]
-    )
-    return json.loads(response.choices[0].message.content)
 
 # --- RUTA PRINCIPAL DE LA API ---
 @app.route('/analyze', methods=['GET'])
@@ -163,14 +136,22 @@ def analyze_endpoint():
                 }
             })
 
-        sugerencias_ia = enriquecer_con_ia(on_page_results.get('contenido_texto', ''), keywords[0], list(all_competitors))
-        del on_page_results['contenido_texto']
+        # Sugerencias básicas sin IA
+        sugerencias_basicas = {
+            "resumen_ejecutivo": f"Análisis SEO completado para {len(keywords)} keywords. Revisar métricas on-page y posicionamiento.",
+            "sugerencias_generales": [
+                "Optimizar título y meta descripción según keywords analizadas",
+                "Mejorar contenido basándose en análisis de competidores",
+                "Revisar problemas on-page identificados"
+            ],
+            "competidores_principales": list(all_competitors)[:5]
+        }
 
         final_report = {
             "url_analizada": target_url, 
             "analisis_on_page": on_page_results, 
             "analisis_keywords": keyword_analyses, 
-            "sugerencias_ia": sugerencias_ia
+            "sugerencias_basicas": sugerencias_basicas
         }
         return jsonify(final_report)
 

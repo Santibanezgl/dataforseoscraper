@@ -1,10 +1,11 @@
 import os
 import requests
 import json
-import traceback  # Importamos la librería para obtener el error detallado
+import traceback
 from bs4 import BeautifulSoup
 from flask import Flask, request, jsonify
 from openai import OpenAI
+import urllib3  # Importamos esto aquí para usarlo después
 
 app = Flask(__name__)
 
@@ -28,39 +29,40 @@ def analyze_endpoint():
             return response.json()['tasks'][0]['result']
 
         def analyze_on_page(url):
-    # Ignoramos una advertencia de seguridad que aparecerá por usar verify=False
-    import urllib3
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-    
-    response = requests.get(url, headers={'User-Agent': 'SEO-Tool/1.0'}, timeout=15, verify=False)
-    response.raise_for_status()
-    soup = BeautifulSoup(response.text, 'html.parser')
-    score = 100
-    issues = []
-    if not soup.find('meta', attrs={'name': 'description'}):
-        issues.append("Falta meta descripción"); score -= 15
-    title_tag = soup.find('title')
-    if not title_tag or len(title_tag.get_text(strip=True)) < 10:
-        issues.append("Título ausente o muy corto"); score -= 15
-    h1_tags = soup.find_all('h1')
-    if not h1_tags:
-        issues.append("Falta etiqueta H1"); score -= 20
-    elif len(h1_tags) > 1:
-        issues.append("Múltiples etiquetas H1"); score -= 10
-    if soup.find_all('img', alt=lambda x: x is None or not x.strip()):
-        issues.append("Imágenes sin atributo ALT"); score -= 10
-    
-    return {
-        "puntaje_on_page": max(0, score),
-        "conteo_palabras": len(soup.get_text(separator=' ', strip=True).split()),
-        "problemas": issues if issues else ["OK"],
-        "titulo_actual": title_tag.get_text(strip=True) if title_tag else "N/A",
-        "metadescripcion_actual": soup.find('meta', attrs={'name': 'description'}).get('content', '').strip() if soup.find('meta', attrs={'name': 'description'}) else "N/A",
-        "url_canonica": soup.find('link', attrs={'rel': 'canonical'}).get('href', 'N/A') if soup.find('link', attrs={'rel': 'canonical'}) else "N/A",
-        "tiene_schema_markup": bool(soup.find('script', type='application/ld+json')),
-        "tiempo_de_respuesta_seg": round(response.elapsed.total_seconds(), 2),
-        "contenido_texto": soup.get_text(separator=' ', strip=True)
-    }
+            # Ignoramos la advertencia de seguridad de SSL
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            
+            # Hacemos la petición sin verificar el certificado SSL
+            response = requests.get(url, headers={'User-Agent': 'SEO-Tool/1.0'}, timeout=15, verify=False)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            score = 100
+            issues = []
+            if not soup.find('meta', attrs={'name': 'description'}):
+                issues.append("Falta meta descripción"); score -= 15
+            title_tag = soup.find('title')
+            if not title_tag or len(title_tag.get_text(strip=True)) < 10:
+                issues.append("Título ausente o muy corto"); score -= 15
+            h1_tags = soup.find_all('h1')
+            if not h1_tags:
+                issues.append("Falta etiqueta H1"); score -= 20
+            elif len(h1_tags) > 1:
+                issues.append("Múltiples etiquetas H1"); score -= 10
+            if soup.find_all('img', alt=lambda x: x is None or not x.strip()):
+                issues.append("Imágenes sin atributo ALT"); score -= 10
+            
+            return {
+                "puntaje_on_page": max(0, score),
+                "conteo_palabras": len(soup.get_text(separator=' ', strip=True).split()),
+                "problemas": issues if issues else ["OK"],
+                "titulo_actual": title_tag.get_text(strip=True) if title_tag else "N/A",
+                "metadescripcion_actual": soup.find('meta', attrs={'name': 'description'}).get('content', '').strip() if soup.find('meta', attrs={'name': 'description'}) else "N/A",
+                "url_canonica": soup.find('link', attrs={'rel': 'canonical'}).get('href', 'N/A') if soup.find('link', attrs={'rel': 'canonical'}) else "N/A",
+                "tiene_schema_markup": bool(soup.find('script', type='application/ld+json')),
+                "tiempo_de_respuesta_seg": round(response.elapsed.total_seconds(), 2),
+                "contenido_texto": soup.get_text(separator=' ', strip=True)
+            }
 
         def enriquecer_con_ia(contenido_pagina, keyword, competidores):
             if not OPENAI_API_KEY:
@@ -104,7 +106,7 @@ def analyze_endpoint():
                     current_url = item.get('url', '')
                     if target_url in current_url and position == 0: position = item.get('rank_group', 0)
                     if len(top_5_competitors) < 5 and target_url not in current_url:
-                        top_5_competitors.append(current_url)
+                        top_5_competidores.append(current_url)
                         all_competitors.add(current_url)
 
             search_volume = keyword_data.get('search_volume', 0)
@@ -115,7 +117,7 @@ def analyze_endpoint():
                 "keyword": keyword,
                 "rendimiento_serp": {"posicion": position, "trafico_estimado": round(estimated_traffic), "valor_trafico_usd": round(estimated_traffic * cpc, 2), "features_en_serp": features_en_serp},
                 "metricas_keyword": {"volumen_busqueda": search_volume, "dificultad_keyword": keyword_data.get('keyword_difficulty', 0), "cpc_usd": cpc},
-                "analisis_competencia": {"top_5_competidores": top_5_competitors}
+                "analisis_competencia": {"top_5_competidores": top_5_competidores}
             })
 
         sugerencias_ia = enriquecer_con_ia(on_page_results.get('contenido_texto', ''), keywords[0], list(all_competitors))

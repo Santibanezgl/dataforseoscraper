@@ -47,7 +47,7 @@ def wait_for_tasks_completion(task_ids, max_wait_time=90, check_interval=5):
             # Verificar tareas completadas
             for task in serp_results['tasks']:
                 task_id = task['id']
-                if task.get('status_code') == 20100 and task.get('result'):
+                if task.get('status_code') == 20000 and task.get('result'):
                     # Tarea completada
                     keyword = task['data']['keyword']
                     completed_tasks[task_id] = {
